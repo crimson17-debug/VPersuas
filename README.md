@@ -1,0 +1,304 @@
+# Persuas
+
+**Revenue recovery that only counts what it caused.**
+
+Razorpay AI Buildathon — Track 03, AI Revenue Recovery.
+
+---
+
+## The one-sentence version
+
+An agent that finds at-risk revenue, decides whether intervening is worth it at
+all, acts through Razorpay, measures how much of the recovery it **actually
+caused** — and asks the rest of the network whether the fault is even its
+merchant's to fix.
+
+## The part that cannot be built outside a processor
+
+A single merchant cannot tell **"this issuer is degraded"** from **"my checkout
+broke for this issuer's customers."** Both produce the same shaped hole, in the
+same cohort, over the same hours, carrying the same failure reason. This is not
+a modelling problem and no amount of tuning fixes it: the distinguishing
+information is not in one merchant's data at all.
+
+So the engine here is measured twice on the same events — once alone, once with
+anonymous signals from a fleet of other merchants on the same rails:
+
+| | Root cause correct |
+|---|---:|
+| Merchant alone | **50.0%** |
+| Same engine, with the network | **83.3%** |
+
+Fifty percent is not the engine guessing badly. Split it by which world the
+fleet was actually in and it is 100% correct when the issuer really is down and
+**0% correct when the fault is the merchant's own** — because from the inside
+those two are the same event. Sixteen cases corrected, none broken.
+
+```bash
+npm run federated        # the twin test, narrated: two fleets, one seed
+npm run eval:federated   # 24 seeded pairs → EVAL_FEDERATED.md
+```
+
+What crosses the merchant boundary is a z-statistic, an effect size, a sample
+size and an onset hour, per rail — never identity, customers, orders, amounts
+or raw events. No rail is reported below five independent contributors, and
+that gate runs *before* any statistic is computed. The whole payload is one
+screen of code in `src/engine/network/contribute.ts`.
+
+The combination is Stouffer's weighted Z across contributors, with the verdict
+gated on how many merchants **independently** moved rather than on a pooled
+average — because a pooled average can be dragged anywhere by one large
+merchant with a broken checkout, and a federated system that falls for that
+broadcasts one merchant's bug to everyone on the rail as fact.
+
+## Why that distinction is the whole project
+
+A large share of failed payments recover on their own. The customer retries, the
+issuer comes back, the card gets updated. Any recovery system that reports gross
+recovered revenue is taking credit for those.
+
+This one withholds a random slice of every cohort it acts on and does nothing to
+it. The gap between the two arms is the only number here that is a measurement
+rather than an assertion. On the held-out evaluation set it says that **about
+two-thirds of the gross figure was never caused by any intervention.**
+
+That is also why the agent's most interesting behaviour is refusal. Four of its
+five possible decisions are not "act".
+
+| Decision | When |
+|---|---|
+| `ACT` | The **lower bound** of estimated net value is positive, and compliance agrees |
+| `WAIT` | The rail is down; delaying the retry is worth more than spending one now |
+| `EXPERIMENT` | Real money at stake, evidence too thin to choose — buy the evidence |
+| `DO_NOT_ACT` | No intervention clears zero net value. Doing nothing wins |
+| `BLOCKED` | Economics approved, a contact rule vetoed |
+
+---
+
+## Run it
+
+```bash
+npm install
+npm run verify   # typecheck + 23 unit tests + the boundary check
+npm run eval     # 200 blind windows vs 5 baselines → EVAL.md   (~25s)
+npm run seed     # engine over 24 held-out windows → .data/     (~20s)
+npm run dev      # the merchant console at localhost:3000
+```
+
+`eval` and `seed` both need to run once before the console has anything to show.
+Everything in the console is engine output — no figure on any screen is
+hand-authored.
+
+Full setup, Razorpay keys, webhook wiring, deployment and a plain list of what is
+**not** production-ready are in **[RUNBOOK.md](./RUNBOOK.md)**.
+
+For a terminal walkthrough with no browser:
+
+```bash
+npm run batch             # one incident, end to end, narrated
+```
+
+It takes a scenario argument:
+
+```bash
+npm run batch -- issuer        # issuer degradation
+npm run batch -- regression    # checkout regression after a staged release
+npm run batch -- retry         # retry-timing burst
+npm run batch -- abandonment   # genuine customer abandonment
+npm run batch -- quiet         # nothing is wrong; watch it stay silent
+```
+
+It prints the whole chain: what changed, who it hit, when it started, what
+caused it and on what evidence, what each intervention was worth, what was
+decided and why, what was rejected and why, what compliance blocked, and finally
+what the holdout says actually happened against what was predicted.
+
+---
+
+## Results
+
+Full numbers, including the failures, are in [EVAL.md](./EVAL.md) — generated by
+`npm run eval`, reproducible on any machine because every stochastic step is
+seeded.
+
+Headline, on 140 held-out windows the engine has never seen:
+
+| Policy | Gross claimed | Measured lift | Spend | Net |
+|---|---:|---:|---:|---:|
+| **This engine** | ₹44.05L | **19.2pp** | ₹5.3L | **₹9.60L** |
+| Nudge every failed payment | ₹65.65L | 3.6pp | ₹18.6k | ₹5.13L |
+| Discount every failed payment | ₹71.41L | 7.4pp | ₹10.90L | −₹10.5k |
+| Retry everything immediately | ₹258.12L | 0.6pp | ₹26.0k | ₹3.48L |
+| Do nothing, ever | ₹0 | — | ₹0 | ₹0 |
+
+Note what the gross column does. Retry-everything "recovers" ₹258L and creates a
+lift whose confidence interval spans zero — it recovers almost nothing it did not
+already have. Discount-everything posts the second-highest gross figure and
+**loses money**, because the discount is paid on every recovery including the
+ones that needed no help.
+
+Also in EVAL.md, because they matter as much:
+
+- **0 false positives on 30 null windows.** Several hundred cohorts are tested
+  per window, so the significance threshold is Šidák-corrected for the number of
+  tests actually run. Half the null windows ship a checkout release anyway, so
+  "a release happened" is never on its own enough to convict.
+- **Recall is 64.5%**, broken out by cause. The misses concentrate in shallow
+  declines spread across large cohorts. Lowering the threshold to catch them puts
+  false positives back on the nulls; the detector is deliberately tuned toward
+  silence.
+- **Root cause top-1 86.7%**, with the confusion matrix. Retry timing gets called
+  as issuer degradation, which is the confusion the corpus was built to provoke.
+- **Calibration**: stated confidence against observed accuracy, with Brier score
+  and expected calibration error.
+
+---
+
+## What is real and what is simulated
+
+Stated plainly, because the alternative is letting someone assume.
+
+| | |
+|---|---|
+| Engine decisions, scoring, statistics | **Real** |
+| Razorpay orders, payment links, webhooks, identifiers | **Real — test mode** |
+| Evaluation numbers and baseline comparison | **Real, on a synthetic corpus** |
+| Transaction history and injected incidents | **Simulated**, tagged `source: 'simulated'` |
+| Issuer health signals | **Simulated** — Razorpay-internal in production |
+| Any claim about real-world revenue lift | **Not claimable from this** |
+| Production routing control | **Not claimable from this** |
+
+Every event carries a `source` field set at creation, never inferred. Real
+Razorpay test-mode events arrive through `src/integrations/razorpay/webhook.ts`
+and map onto the identical `PaymentEvent` contract the simulator produces — the
+engine cannot tell them apart and does not need to. That seam is what makes
+production integration a swap rather than a rewrite.
+
+Test mode requires no KYC. Keys start with `rzp_test_`, transactions use dummy
+credentials, no real money moves. The client **refuses a live key** on startup:
+this system creates payment links, and it has no business holding one.
+
+```bash
+cp .env.example .env    # add rzp_test_... keys to enable the live path
+```
+
+---
+
+## The console
+
+The landing page at `/` runs the product's actual experiment as its hero: two
+lanes of failed payments fall in parallel, the left one treated and the right one
+a holdout that receives nothing, and both bars fill. The right bar filling is the
+whole point — failed payments recover on their own, and only the gap between the
+bars is anything an intervention can claim. The rates animated are the real
+measured ones from the current run, read from the ledger.
+
+Behind it, five screens in the order the work happens.
+
+| | Screen | What it answers |
+|---|---|---|
+| 1 | **Batch run** (`/batch`) | The working queue. Every decision with its chip — ACT, WAIT, EXPERIMENT, DO NOT ACT, BLOCKED — the cohort, the diagnosis, the measured lift and the net. Filterable by decision type, so the refusals are one click away. |
+| 2 | **Incidents** | What changed, for whom, starting when. Ranked hypotheses with the evidence for and against each, the matched control used, and the full intervention comparison including what was rejected and why. |
+| 3 | **Incrementality** | Treated versus holdout, the lift with its interval drawn against a zero line, gross split into what was caused and what would have happened anyway, and lift measured separately per intervention. |
+| 4 | **Evidence ledger** | The audit trail. One decision expanded end to end — triggering evidence, multiple-comparison control, hypotheses considered and rejected, counterfactual estimates, policy check, compliance gate, action, outcome, and what was written back to the priors. |
+| 5 | **Evaluation** | Every number from `EVAL.md`, including recall by cause, the confusion matrix, the calibration table and a plainly-labelled section on what the evaluation does not prove. |
+| 6 | **Rail network** | The same incident in two worlds — issuer-wide and merchant-only — with the engine's answer alone and with the fleet, the per-rail rulings, and the exact list of what does and does not cross the merchant boundary. |
+
+A provenance badge sits in the chrome of every screen stating whether the data is
+simulated or coming from Razorpay test mode. It is permanent rather than a
+footnote, because every screen is one glance from a number and a reader is
+entitled to know which kind it is.
+
+`POST /api/webhooks/razorpay` is the live ingestion endpoint — HMAC-verified
+against the raw request bytes, deduplicated on `(event, payment id)` so Razorpay's
+retries cannot double-count a recovery. `GET` the same path for a health check.
+
+## How it works
+
+```
+events ──► detector ──► diagnosis ──► policy ──► compliance ──► runner ──► priors
+           │            │             │          │              │          │
+           cohort scan  matched       score      attempt caps   holdout    measured
+           change point control       every      cooldowns      assignment lift feeds
+           Šidák        difference-   option     quiet hours    outcome    back into
+           correction   in-           incl.      consent        resolution the next
+                        differences   doing      promise-to-pay            decision
+                                      nothing    kill switch
+```
+
+Six modules, one job each:
+
+- **`simulator/`** — synthetic Razorpay-compatible events with injectable
+  incidents. `world.ts` holds the ground truth and is sealed from the engine.
+- **`detector/`** — rolling baseline, CUSUM change point for onset, a scan across
+  every cohort of up to three dimensions with enough volume to measure.
+- **`diagnosis/`** — matched control cohorts, difference-in-differences with
+  confidence intervals, hypothesis ranking, and an explicit
+  `INSUFFICIENT_EVIDENCE` verdict.
+- **`policy/`** — the five-outcome decision rule, the earned prior store, the
+  cost model, and the compliance gate.
+- **`runner/`** — batch execution, randomised holdout assignment, outcome
+  resolution, incremental lift measurement, ledger.
+- **`network/`** — the federated layer: what a merchant publishes, Stouffer
+  combination, Cochran's Q and I², the k-anonymity gate, and the
+  rail-versus-merchant ruling.
+- **`eval/`** — the blind corpus, the baselines, the metrics, `EVAL.md`, and
+  the twin-pair federated evaluation.
+
+Architecture decisions and the alternatives that were rejected are in
+[ARCHITECTURE.md](./ARCHITECTURE.md).
+
+---
+
+## Compliance and stopping rules
+
+The brief asks for compliant escalation and stopping rules. Every one of these
+can veto an action the economics approved, and every veto is recorded with the
+rule that caused it.
+
+| Rule | Behaviour |
+|---|---|
+| Attempt cap | 3 contacts per customer per rolling 14 days |
+| Escalating cooldown | 24h → 72h → 168h between attempts |
+| Quiet hours | No outreach 21:00–09:00 IST — **queued, not dropped** |
+| Consent | Per-channel, checked before every send |
+| Promise to pay | All chasing suppressed until the committed date + 1 |
+| Escalation ladder | in-app link → email → SMS, never skipping a rung |
+| Economic stop | Net expected value ≤ 0 closes the item as abandoned-by-rule |
+| Kill switch | Global halt, including server-side actions |
+| Idempotency | `hash(customer, decision, attempt)` — replayed webhooks cannot double-send |
+
+Server-side interventions — delaying a retry, steering routing — bypass the
+contact rules, because they do not message anyone.
+
+---
+
+## Known limitations
+
+- **Low-volume merchants.** The cohort scan needs sample size. Below a few
+  hundred transactions a day the intervals are too wide to act on.
+- **The federated fleet is synthetic, and its merchants are independent draws.**
+  Real merchants share seasonality, campaigns and customers, and correlated
+  traffic weakens the independence Stouffer's method assumes. Every contributor
+  here also runs an identical detector; a real network would have version skew.
+- **k-anonymity is not differential privacy.** It is a structural guarantee
+  about what gets published, not a formal budget. Repeated queries across many
+  windows still leak slowly, and production would need calibrated noise and a
+  tracked budget.
+- **Parallel trends is an assumption.** Difference-in-differences identifies an
+  effect only if treated and control would have moved together absent the cause.
+  It is checked in the pre-period and it can still be wrong.
+- **The holdout has an ethical cost.** A random 20% of affected customers get no
+  recovery attempt. In production that needs a volume cap, a written
+  justification, and an exemption path for high-value or vulnerable accounts. It
+  should not ship silently.
+- **Retry timing and issuer degradation are genuinely hard to separate** from the
+  outside. The engine calls the former as the latter more often than it should,
+  and EVAL.md says so.
+
+## Roadmap
+
+Cut deliberately to keep the core end-to-end path working rather than shipping
+twelve shallow modules: customer return probability, merchant growth scoring, a
+developer-facing intelligence API, and the merchant console UI. The engine and
+the evaluation come first because they are what the claims rest on.

@@ -1,0 +1,35 @@
+{
+  "name": "persuas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Revenue recovery that only counts what it caused.",
+  "scripts": {
+    "seed": "tsx src/scripts/seed.ts",
+    "detect": "tsx src/scripts/detect.ts",
+    "batch": "tsx src/scripts/batch.ts",
+    "federated": "tsx src/scripts/federated.ts",
+    "eval:federated": "tsx src/eval/federated.ts",
+    "eval": "tsx src/eval/run.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check:boundaries": "tsx src/scripts/check-boundaries.ts",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "prebuild": "npm run eval && npm run eval:federated && npm run seed",
+    "verify": "npm run typecheck && npm test && npm run check:boundaries"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "next": "^15.5.25",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}
